@@ -4,6 +4,7 @@ Simple function that detects decreasing ETH/Gnosis validator's balance and alert
 ## Requirements
 * `Python 3+`
 * `pip3`
+* `aws credentials`
 
 ## .env file content
 ```bash
@@ -25,5 +26,6 @@ pip3 install -r requirements.txt
 
 ## Running the script
 ```bash
+aws configure
 python3 main.py
 ```

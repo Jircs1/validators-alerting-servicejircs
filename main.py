@@ -22,7 +22,7 @@ VALIDATORS=os.getenv('VALIDATORS') # String of comma separated validator indexes
 
 logging.basicConfig(format='%(asctime)s | %(levelname)s: %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.addHandler(watchtower.CloudWatchLogHandler(log_group_name="ValidatorsAlertingService"))
+logger.addHandler(watchtower.CloudWatchLogHandler(log_group_name=f"ValidatorsAlertingService_{NETWORK}"))
 
 # Connects to sqlite database
 try:
@@ -155,10 +155,10 @@ async def main():
             try:
                 fallback = index + 1
                 endpoint = f'{url}/eth/v1/events?topics=finalized_checkpoint'
-                stream_response = requests.get(endpoint, stream=True)
+                stream_response = requests.get(endpoint, stream=True, timeout=5.0)
                 stream_response.raise_for_status()
-                checkpoint_topic = sseclient.SSEClient(stream_response)
                 if stream_response.status_code == 200 or stream_response.status_code == 202:
+                    checkpoint_topic = sseclient.SSEClient(stream_response)
                     logger.info(f'Connected to: {url}')
                     for event in checkpoint_topic.events():
                         logger.info("Received finalized checkpoint from events stream.")
@@ -167,11 +167,13 @@ async def main():
                         await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch)
                         await alert_on_validator_inactivity(TABLE_NAME)
                     break
+                else: 
+                    logger.warning(f'{url} is not available.')
             except requests.Timeout as err:
                 try:
                     logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
                 except IndexError as e:
-                    logger.error(f'All endpoints are down: {e}')
+                    logger.error(f'All endpoints are down: {urls}')
                 continue
             except requests.RequestException as err:
                 try:
