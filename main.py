@@ -8,6 +8,7 @@ import watchtower, logging
 import sseclient
 import asyncio
 import json
+import time
 
 # Environment variables
 NETWORK=os.getenv('NETWORK') # Network name
@@ -181,5 +182,6 @@ async def main():
                 except IndexError as e:
                     logger.error(f'All endpoints are down: {urls}')
                 continue
+        time.sleep(20)
 
 asyncio.run(main())
