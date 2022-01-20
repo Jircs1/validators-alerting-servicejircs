@@ -7,6 +7,7 @@ import os
 import logging
 import sseclient
 import asyncio
+import json
 
 # Environment variables
 NETWORK=os.getenv('NETWORK') # Network name
@@ -16,6 +17,7 @@ BEACON_FALLBACK_URL=os.getenv('BEACON_FALLBACK_URL') # Fallback beacon node
 MISSED_ATTESTATIONS_ALLOWANCE=os.getenv('MISSED_ATTESTATIONS_ALLOWANCE') # Maximum amount of missed attestation before triggering an alert
 TABLE_NAME=os.getenv('TABLE_NAME') # Name of the table in database
 VALIDATORS=os.getenv('VALIDATORS') # String of comma separated validator indexes
+OPSGENIE_KEY=os.getenv('OPSGENIE_KEY') # API Key for OpsGenie alerting service
 
 logging.basicConfig(format='%(asctime)s | %(levelname)s: %(message)s', level=logging.INFO)
 
@@ -40,8 +42,8 @@ async def check_beacon_url():
 # Creating database table if it does not exist
 # Creating unique indexes on validator's index value, also if not exists already
 async def create_table(table):
-    sql = 'create table if not exists ' + table + ' (ind integer, balance integer, missed_attestations_current integer default 0, missed_attestations_total integer default 0)'
-    sql_unique = 'create unique index if not exists validators_index on validators ( ind ) ;'
+    sql = f'create table if not exists {table} (ind integer, balance integer, missed_attestations_current integer default 0, missed_attestations_total integer default 0)'
+    sql_unique = f'create unique index if not exists validators_index on {table} ( ind ) ;'
     try:
         cur.execute(sql)
         cur.execute(sql_unique)
@@ -52,7 +54,6 @@ async def create_table(table):
 # Gets the validators balances from /eth/v1/beacon/states/head/validator_balances url
 # Inserts that data to the previously created table
 # Tracks the balance of each validators and counts the missed attestations (when balance decreases)
-# Upon MISSED_ATTESTATIONS_ALLOWANCE trigger and alert indicating that the node is most likely offline
 async def get_validator_balances(url, validators, table_name):
 
     endpoint = f'{url}/eth/v1/beacon/states/head/validator_balances?id={validators}'
@@ -74,14 +75,12 @@ async def get_validator_balances(url, validators, table_name):
                 if balance > int(validator['balance']):
                     logging.warning(f'Attestation has been missed by {validator["index"]}, count: {missed_attestations_current +1}')
                     try:
-                        cur.execute(f'INSERT OR REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], missed_attestations_current +1, missed_attestations_total +1))
+                        cur.execute(f'REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], missed_attestations_current +1, missed_attestations_total +1))
                     except sqlite3.Error as err:
                         logging.error(err.message)
-                    if missed_attestations_current +1 >= MISSED_ATTESTATIONS_ALLOWANCE:
-                        logging.warning('Alert from there!')  
                 else:
                     try:
-                        cur.execute(f'REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], 0, missed_attestations_total))
+                        cur.execute(f'INSERT OR REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], 0, missed_attestations_total))
                     except sqlite3.Error as err:
                         logging.error(err.message)
                     
@@ -96,10 +95,55 @@ async def get_validator_balances(url, validators, table_name):
 async def get_validators_with_missed_attestations(table):
     with con:
         try:
-            cur.execute(f"SELECT ind, missed_attestations_total FROM {table} WHERE missed_attestations_current > 0")
+            cur.execute(f"SELECT ind, missed_attestations_current, missed_attestations_total FROM {table} WHERE missed_attestations_total > 0")
         except sqlite3.Error as err:
             logging.error(err.message)
-        logging.info(f"Validators that missed in current epoch: {cur.fetchall()}")
+        logging.info(f"Validators that missed attestations in total: {cur.fetchall()}")
+
+# Determines whether validator is active or not by checking its current missed attestation count
+# Upon MISSED_ATTESTATIONS_ALLOWANCE trigger and alert indicating that the node is most likely offline
+async def alert_on_validator_inactivity(table):
+    with con:
+        try:
+            inactive_validators = cur.execute(f"SELECT ind, missed_attestations_current FROM {table} WHERE missed_attestations_current >= {MISSED_ATTESTATIONS_ALLOWANCE}").fetchall()
+            if len(inactive_validators) > 0:
+                await send_alert(inactive_validators)
+        except sqlite3.Error as err:
+            logging.error(err.message)
+
+# Sends POST message to OpsGenie service
+async def send_alert(inactive_validators):
+    validators_indexes = ''
+    endpoint = "https://api.eu.opsgenie.com/v1/incidents/create"
+    for (index, missed_attestations) in inactive_validators:
+        validators_indexes += f"{index},"
+    payload = json.dumps({
+      "message": f"{NETWORK.capitalize()} Validators Down",
+      "description": f"{len(inactive_validators)} {NETWORK} validators inactive: {validators_indexes[:-1]}\nLook up: https://docs.google.com/spreadsheets/d/1UAhVt0WRVyjMhezpINTP9UR0iQXxGkT5oTbku4-nY4c",
+      "responders": [
+        {
+          "id": "90b3182d-d975-42e1-80f5-2a2ca7b3de24",
+          "type": "team"
+        }
+      ],
+      "tags": [
+        "Outage",
+        "Critical"
+      ],
+      "priority": "P1"
+    })
+    headers = {
+      'Content-Type': 'application/json',
+      'Authorization': f'GenieKey {OPSGENIE_KEY}'
+    }
+    try:
+        r = requests.post(endpoint, headers=headers, data=payload.encode('utf8'), timeout=5.0)
+        r.raise_for_status()
+        logging.info(f"Sending an alert for validators: {validators_indexes}")
+    except requests.exceptions.HTTPError as err:
+        logging.error(f'Error: {err}')
+    except requests.exceptions.RequestException as err:
+        logging.error(f'Error: {err}')
 
 # Reads number of validators to be monitored
 # Executes create_table function
@@ -122,6 +166,7 @@ async def main():
         logging.info("Received finalized checkpoint from events stream.")
         logging.info(event.data)
         await get_validator_balances(active_url, VALIDATORS, TABLE_NAME)
+        await alert_on_validator_inactivity(TABLE_NAME)
         await get_validators_with_missed_attestations(TABLE_NAME)
 
 asyncio.run(main())
