@@ -9,8 +9,7 @@ Simple function that detects decreasing ETH/Gnosis validator's balance and alert
 ```bash
 NETWORK=mainnet # Network Name
 DATABASE=validators.db # Local or remote DB name/url
-BEACON_URL=http://localhost:3500 # Main beacon node
-BEACON_FALLBACK_URL=http://localhost:5052 # Fallback beacon node
+BEACON_URL=http://localhost:3500 # Comma separated list of beacon nodes
 MISSED_ATTESTATIONS_ALLOWANCE=3 # Maximum amount of missed attestation before triggering an alert
 TABLE_NAME=mainnet_validators # Name of the table in database
 OPSGENIE_KEY=string # API Key for OpsGenie alerting service

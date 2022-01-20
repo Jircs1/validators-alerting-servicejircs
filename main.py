@@ -4,7 +4,7 @@ import sqlite3
 from dotenv import load_dotenv
 load_dotenv()
 import os
-import logging
+import watchtower, logging
 import sseclient
 import asyncio
 import json
@@ -12,8 +12,7 @@ import json
 # Environment variables
 NETWORK=os.getenv('NETWORK') # Network name
 DATABASE=os.getenv('DATABASE') # Local or remote DB name/url
-BEACON_URL=os.getenv('BEACON_URL') # Main beacon node
-BEACON_FALLBACK_URL=os.getenv('BEACON_FALLBACK_URL') # Fallback beacon node
+BEACON_URL=os.getenv('BEACON_URL') # Comma separated list of beacon nodes
 MISSED_ATTESTATIONS_ALLOWANCE=os.getenv('MISSED_ATTESTATIONS_ALLOWANCE') # Maximum amount of missed attestation before triggering an alert
 TABLE_NAME=os.getenv('TABLE_NAME') # Name of the table in database
 OPSGENIE_KEY=os.getenv('OPSGENIE_KEY') # API Key for OpsGenie alerting service
@@ -22,24 +21,16 @@ SPREADSHEET=os.getenv('SPREADSHEET') # Link to validators dashboard for referenc
 VALIDATORS=os.getenv('VALIDATORS') # String of comma separated validator indexes
 
 logging.basicConfig(format='%(asctime)s | %(levelname)s: %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.addHandler(watchtower.CloudWatchLogHandler(log_group_name="ValidatorsAlertingService"))
 
 # Connects to sqlite database
 try:
     con = sqlite3.connect(DATABASE)
     cur = con.cursor()
-    logging.info(f"The connection with {DATABASE} has been established.")
+    logger.info(f"The connection with {DATABASE} has been established.")
 except sqlite3.Error as err:
-    logging.error(err.message)
-
-# Checks whether main beacon node is responding, fallback otherwise
-async def check_beacon_url():
-    try:
-        requests.get(BEACON_URL)
-        beacon_url=BEACON_URL
-    except requests.exceptions.ConnectionError:
-        logging.error(f"URL {BEACON_URL} is not reachable, falling back to {BEACON_FALLBACK_URL}")
-        beacon_url=BEACON_FALLBACK_URL
-    return beacon_url
+    logger.error(err.message)
 
 # Creating database table if it does not exist
 # Creating unique indexes on validator's index value, also if not exists already
@@ -49,9 +40,9 @@ async def create_table(table):
     try:
         cur.execute(sql)
         cur.execute(sql_unique)
-        logging.info(f"The table {table} has been created or skipped.")
+        logger.info(f"The table {table} has been created or skipped.")
     except sqlite3.Error as err:
-        logging.error(err.message)
+        logger.error(err.message)
 
 # Gets the validators balances from /eth/v1/beacon/states/head/validator_balances url
 # Inserts that data to the previously created table
@@ -69,29 +60,29 @@ async def get_validator_balances(url, validators, table_name, epoch):
                 cur.execute(f'INSERT OR IGNORE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'],0,0))
                 filter = cur.execute(f'SELECT * FROM {table_name} WHERE ind = {validator["index"]}')
             except sqlite3.Error as err:
-                logging.error(err.message)
+                logger.error(err.message)
             for item in filter:
                 balance = item[1]
                 missed_attestations_current = item[2]
                 missed_attestations_total = item[3]
                 if balance > int(validator['balance']):
-                    logging.warning(f'Attestation has been missed by {validator["index"]}, count: {missed_attestations_current +1}')
+                    logger.warning(f'Attestation has been missed by {validator["index"]}, count: {missed_attestations_current +1}')
                     try:
                         cur.execute(f'REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], missed_attestations_current +1, missed_attestations_total +1))
                     except sqlite3.Error as err:
-                        logging.error(err.message)
+                        logger.error(err.message)
                 else:
                     try:
                         cur.execute(f'INSERT OR REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], 0, missed_attestations_total))
                     except sqlite3.Error as err:
-                        logging.error(err.message)
+                        logger.error(err.message)
                     
-        logging.info(f'Epoch: {epoch}, inserting data to the {table_name} table.')
+        logger.info(f'Epoch: {epoch}, inserting data to the {table_name} table.')
 
     except requests.exceptions.HTTPError as err:
-        logging.error(f'Error: {err}')
+        logger.error(f'Error: {err}')
     except requests.exceptions.RequestException as err:
-        logging.error(f'Error: {err}')
+        logger.error(f'Error: {err}')
 
 # Gets the list of validators that have missed at least 1 attestation in total
 async def get_validators_with_missed_attestations(table):
@@ -99,8 +90,8 @@ async def get_validators_with_missed_attestations(table):
         try:
             cur.execute(f"SELECT ind, missed_attestations_current, missed_attestations_total FROM {table} WHERE missed_attestations_total > 0")
         except sqlite3.Error as err:
-            logging.error(err.message)
-        logging.info(f"Validators that missed attestations in total: {cur.fetchall()}")
+            logger.error(err.message)
+        logger.info(f"Validators that missed attestations in total: {cur.fetchall()}")
 
 # Determines whether validator is active or not by checking its current missed attestation count
 # Upon MISSED_ATTESTATIONS_ALLOWANCE trigger and alert indicating that the node is most likely offline
@@ -111,7 +102,7 @@ async def alert_on_validator_inactivity(table):
             if len(inactive_validators) > 0:
                 await send_alert(inactive_validators)
         except sqlite3.Error as err:
-            logging.error(err.message)
+            logger.error(err.message)
 
 # Sends POST message to OpsGenie service
 async def send_alert(inactive_validators):
@@ -141,11 +132,11 @@ async def send_alert(inactive_validators):
     try:
         r = requests.post(endpoint, headers=headers, data=payload.encode('utf8'), timeout=5.0)
         r.raise_for_status()
-        logging.info(f"Sending an alert for validators: {validators_indexes[:-1]}")
+        logger.info(f"Sending an alert for validators: {validators_indexes[:-1]}")
     except requests.exceptions.HTTPError as err:
-        logging.error(f'Error: {err}')
+        logger.error(f'Error: {err}')
     except requests.exceptions.RequestException as err:
-        logging.error(f'Error: {err}')
+        logger.error(f'Error: {err}')
 
 # Reads number of validators to be monitored
 # Executes create_table function
@@ -154,22 +145,39 @@ async def send_alert(inactive_validators):
 # Executes get_validator_balances function on each new event
 async def main():
     validators = VALIDATORS.split(',')
-    logging.info(f"{NETWORK} validators monitored: {len(validators)}")
+    urls = BEACON_URL.split(',')
+    logger.info(f"{NETWORK} validators monitored: {len(validators)}")
     
     await create_table(TABLE_NAME)
-    
-    active_url = await check_beacon_url()
-    endpoint = f'{active_url}/eth/v1/events?topics=finalized_checkpoint'
-    stream_response = requests.get(endpoint, stream=True)
 
-    checkpoint_topic = sseclient.SSEClient(stream_response)
-
-    for event in checkpoint_topic.events():
-        logging.info("Received finalized checkpoint from events stream.")
-        logging.info(event.data)
-        epoch = json.loads(event.data)["epoch"]
-        await get_validator_balances(active_url, VALIDATORS, TABLE_NAME, epoch)
-        await alert_on_validator_inactivity(TABLE_NAME)
-        # await get_validators_with_missed_attestations(TABLE_NAME)
+    while True:
+        for index, url in enumerate(urls):
+            try:
+                fallback = index + 1
+                endpoint = f'{url}/eth/v1/events?topics=finalized_checkpoint'
+                stream_response = requests.get(endpoint, stream=True)
+                stream_response.raise_for_status()
+                checkpoint_topic = sseclient.SSEClient(stream_response)
+                if stream_response.status_code == 200 or stream_response.status_code == 202:
+                    logger.info(f'Connected to: {url}')
+                    for event in checkpoint_topic.events():
+                        logger.info("Received finalized checkpoint from events stream.")
+                        logger.info(event.data)
+                        epoch = json.loads(event.data)["epoch"]
+                        await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch)
+                        await alert_on_validator_inactivity(TABLE_NAME)
+                    break
+            except requests.Timeout as err:
+                try:
+                    logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
+                except IndexError as e:
+                    logger.error(f'All endpoints are down: {e}')
+                continue
+            except requests.RequestException as err:
+                try:
+                    logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
+                except IndexError as e:
+                    logger.error(f'All endpoints are down: {urls}')
+                continue
 
 asyncio.run(main())
