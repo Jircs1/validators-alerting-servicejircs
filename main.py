@@ -16,8 +16,10 @@ BEACON_URL=os.getenv('BEACON_URL') # Main beacon node
 BEACON_FALLBACK_URL=os.getenv('BEACON_FALLBACK_URL') # Fallback beacon node
 MISSED_ATTESTATIONS_ALLOWANCE=os.getenv('MISSED_ATTESTATIONS_ALLOWANCE') # Maximum amount of missed attestation before triggering an alert
 TABLE_NAME=os.getenv('TABLE_NAME') # Name of the table in database
-VALIDATORS=os.getenv('VALIDATORS') # String of comma separated validator indexes
 OPSGENIE_KEY=os.getenv('OPSGENIE_KEY') # API Key for OpsGenie alerting service
+OPSGENIE_TEAM_ID=os.getenv('OPSGENIE_TEAM_ID') # Id of the routing team
+SPREADSHEET=os.getenv('SPREADSHEET') # Link to validators dashboard for reference
+VALIDATORS=os.getenv('VALIDATORS') # String of comma separated validator indexes
 
 logging.basicConfig(format='%(asctime)s | %(levelname)s: %(message)s', level=logging.INFO)
 
@@ -54,7 +56,7 @@ async def create_table(table):
 # Gets the validators balances from /eth/v1/beacon/states/head/validator_balances url
 # Inserts that data to the previously created table
 # Tracks the balance of each validators and counts the missed attestations (when balance decreases)
-async def get_validator_balances(url, validators, table_name):
+async def get_validator_balances(url, validators, table_name, epoch):
 
     endpoint = f'{url}/eth/v1/beacon/states/head/validator_balances?id={validators}'
     
@@ -84,14 +86,14 @@ async def get_validator_balances(url, validators, table_name):
                     except sqlite3.Error as err:
                         logging.error(err.message)
                     
-        logging.info(f'Inserting data to the {table_name} table.')
+        logging.info(f'Epoch: {epoch}, inserting data to the {table_name} table.')
 
     except requests.exceptions.HTTPError as err:
         logging.error(f'Error: {err}')
     except requests.exceptions.RequestException as err:
         logging.error(f'Error: {err}')
 
-# Gets the list of validators that have missed at least 1 attestation
+# Gets the list of validators that have missed at least 1 attestation in total
 async def get_validators_with_missed_attestations(table):
     with con:
         try:
@@ -119,10 +121,10 @@ async def send_alert(inactive_validators):
         validators_indexes += f"{index},"
     payload = json.dumps({
       "message": f"{NETWORK.capitalize()} Validators Down",
-      "description": f"{len(inactive_validators)} {NETWORK} validators inactive: {validators_indexes[:-1]}\nLook up: https://docs.google.com/spreadsheets/d/1UAhVt0WRVyjMhezpINTP9UR0iQXxGkT5oTbku4-nY4c",
+      "description": f"{len(inactive_validators)} {NETWORK} validators inactive: {validators_indexes[:-1]}\nLook up: {SPREADSHEET}",
       "responders": [
         {
-          "id": "90b3182d-d975-42e1-80f5-2a2ca7b3de24",
+          "id": OPSGENIE_TEAM_ID,
           "type": "team"
         }
       ],
@@ -139,7 +141,7 @@ async def send_alert(inactive_validators):
     try:
         r = requests.post(endpoint, headers=headers, data=payload.encode('utf8'), timeout=5.0)
         r.raise_for_status()
-        logging.info(f"Sending an alert for validators: {validators_indexes}")
+        logging.info(f"Sending an alert for validators: {validators_indexes[:-1]}")
     except requests.exceptions.HTTPError as err:
         logging.error(f'Error: {err}')
     except requests.exceptions.RequestException as err:
@@ -165,8 +167,9 @@ async def main():
     for event in checkpoint_topic.events():
         logging.info("Received finalized checkpoint from events stream.")
         logging.info(event.data)
-        await get_validator_balances(active_url, VALIDATORS, TABLE_NAME)
+        epoch = json.loads(event.data)["epoch"]
+        await get_validator_balances(active_url, VALIDATORS, TABLE_NAME, epoch)
         await alert_on_validator_inactivity(TABLE_NAME)
-        await get_validators_with_missed_attestations(TABLE_NAME)
+        # await get_validators_with_missed_attestations(TABLE_NAME)
 
 asyncio.run(main())
