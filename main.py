@@ -48,7 +48,7 @@ async def create_table(table):
 # Gets the validators balances from /eth/v1/beacon/states/head/validator_balances url
 # Inserts that data to the previously created table
 # Tracks the balance of each validators and counts the missed attestations (when balance decreases)
-async def get_validator_balances(url, validators, table_name, epoch):
+async def get_validator_balances(url, validators, table_name, epoch, checkpoint_topic):
 
     endpoint = f'{url}/eth/v1/beacon/states/head/validator_balances?id={validators}'
     
@@ -80,10 +80,15 @@ async def get_validator_balances(url, validators, table_name, epoch):
                     
         logger.info(f'Epoch: {epoch}, inserting data to the {table_name} table.')
 
-    except requests.exceptions.HTTPError as err:
-        logger.error(f'Error: {err}')
+    except requests.exceptions.HTTPError:
+        logger.error(f'Connection to {url} timed out.')
+        logger.info("Closing connection with SSE stream.")
+        checkpoint_topic.close()
+            
     except requests.exceptions.RequestException as err:
         logger.error(f'Error: {err}')
+        logger.info("Closing connection with SSE stream.")
+        checkpoint_topic.close()
 
 # Gets the list of validators that have missed at least 1 attestation in total
 async def get_validators_with_missed_attestations(table):
@@ -156,32 +161,35 @@ async def main():
             try:
                 fallback = index + 1
                 endpoint = f'{url}/eth/v1/events?topics=finalized_checkpoint'
-                stream_response = requests.get(endpoint, stream=True, timeout=5.0)
+                stream_response = requests.get(endpoint, stream=True)
                 stream_response.raise_for_status()
+                checkpoint_topic = sseclient.SSEClient(stream_response)
+
                 if stream_response.status_code == 200 or stream_response.status_code == 202:
-                    checkpoint_topic = sseclient.SSEClient(stream_response)
                     logger.info(f'Connected to: {url}')
                     for event in checkpoint_topic.events():
+                        if len(event.data) == 0: break
                         logger.info("Received finalized checkpoint from events stream.")
                         logger.info(event.data)
                         epoch = json.loads(event.data)["epoch"]
-                        await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch)
+                        await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch, checkpoint_topic)
                         await alert_on_validator_inactivity(TABLE_NAME)
                     break
                 else: 
                     logger.warning(f'{url} is not available.')
-            except requests.Timeout as err:
+            except AttributeError:
+                continue
+            except requests.exceptions.Timeout as err:
                 try:
                     logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
-                except IndexError as e:
+                except IndexError:
                     logger.error(f'All endpoints are down: {urls}')
                 continue
-            except requests.RequestException as err:
+            except requests.exceptions.RequestException as err:
                 try:
                     logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
-                except IndexError as e:
+                except IndexError:
                     logger.error(f'All endpoints are down: {urls}')
                 continue
-        time.sleep(20)
 
 asyncio.run(main())
