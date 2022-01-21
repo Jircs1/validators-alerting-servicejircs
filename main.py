@@ -48,7 +48,7 @@ async def create_table(table):
 # Gets the validators balances from /eth/v1/beacon/states/head/validator_balances url
 # Inserts that data to the previously created table
 # Tracks the balance of each validators and counts the missed attestations (when balance decreases)
-async def get_validator_balances(url, validators, table_name, epoch, checkpoint_topic):
+async def get_validator_balances(url, validators, table_name, epoch, checkpoint_topic, total_balance):
 
     endpoint = f'{url}/eth/v1/beacon/states/head/validator_balances?id={validators}'
     
@@ -59,13 +59,13 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
         for validator in data:
             try:
                 cur.execute(f'INSERT OR IGNORE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'],0,0))
-                filter = cur.execute(f'SELECT * FROM {table_name} WHERE ind = {validator["index"]}')
             except sqlite3.Error as err:
                 logger.error(err.message)
-            for item in filter:
+            for item in cur.execute(f'SELECT * FROM {table_name} WHERE ind = {validator["index"]}'):
                 balance = item[1]
                 missed_attestations_current = item[2]
                 missed_attestations_total = item[3]
+                total_balance += balance
                 if balance > int(validator['balance']):
                     logger.warning(f'Attestation has been missed by {validator["index"]}, count: {missed_attestations_current +1}')
                     try:
@@ -77,7 +77,8 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
                         cur.execute(f'INSERT OR REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], 0, missed_attestations_total))
                     except sqlite3.Error as err:
                         logger.error(err.message)
-                    
+        logger.info(f"Total balance: {(total_balance/10**9)/32} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")
+        logger.info(f"Total earned: {((total_balance/10**9) - len(VALIDATORS.split(','))*32)/32} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")           
         logger.info(f'Epoch: {epoch}, inserting data to the {table_name} table.')
 
     except requests.exceptions.HTTPError:
@@ -153,6 +154,7 @@ async def main():
     validators = VALIDATORS.split(',')
     urls = BEACON_URL.split(',')
     logger.info(f"{NETWORK} validators monitored: {len(validators)}")
+    total_balance = 0
     
     await create_table(TABLE_NAME)
 
@@ -172,13 +174,11 @@ async def main():
                         logger.info("Received finalized checkpoint from events stream.")
                         logger.info(event.data)
                         epoch = json.loads(event.data)["epoch"]
-                        await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch, checkpoint_topic)
+                        await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch, checkpoint_topic, total_balance)
                         await alert_on_validator_inactivity(TABLE_NAME)
                     break
                 else: 
                     logger.warning(f'{url} is not available.')
-            except AttributeError:
-                continue
             except requests.exceptions.Timeout as err:
                 try:
                     logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
@@ -190,6 +190,8 @@ async def main():
                     logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
                 except IndexError:
                     logger.error(f'All endpoints are down: {urls}')
+                continue
+            except AttributeError:
                 continue
 
 asyncio.run(main())
