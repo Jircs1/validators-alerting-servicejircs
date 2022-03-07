@@ -53,7 +53,7 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
     endpoint = f'{url}/eth/v1/beacon/states/head/validator_balances?id={validators}'
     
     try:
-        r = requests.get(endpoint, timeout=5.0)
+        r = requests.get(endpoint, timeout=10.0)
         r.raise_for_status()
         data = r.json()['data']
         for validator in data:
@@ -77,8 +77,10 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
                         cur.execute(f'INSERT OR REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], 0, missed_attestations_total))
                     except sqlite3.Error as err:
                         logger.error(err.message)
-        logger.info(f"Total balance: {(total_balance/10**9)/32} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")
-        logger.info(f"Total earned: {((total_balance/10**9) - len(VALIDATORS.split(','))*32)/32} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")           
+        total_balance_formatted = (total_balance/10**9)/32
+        total_earned = ((total_balance/10**9) - len(VALIDATORS.split(','))*32)/32
+        logger.info(f"Total balance: {total_balance_formatted} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")
+        logger.info(f"Total earned: {total_earned} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")   
         logger.info(f'Epoch: {epoch}, inserting data to the {table_name} table.')
 
     except requests.exceptions.HTTPError:
@@ -137,7 +139,7 @@ async def send_alert(inactive_validators):
       'Authorization': f'GenieKey {OPSGENIE_KEY}'
     }
     try:
-        r = requests.post(endpoint, headers=headers, data=payload.encode('utf8'), timeout=5.0)
+        r = requests.post(endpoint, headers=headers, data=payload.encode('utf8'), timeout=10.0)
         r.raise_for_status()
         logger.info(f"Sending an alert for validators: {validators_indexes[:-1]}")
     except requests.exceptions.HTTPError as err:
