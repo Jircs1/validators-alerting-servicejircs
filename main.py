@@ -77,7 +77,11 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
                         cur.execute(f'INSERT OR REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], 0, missed_attestations_total))
                     except sqlite3.Error as err:
                         logger.error(err.message)
-        total_balance_formatted = (total_balance/10**9)/32
+        if NETWORK == 'gnosis':
+            total_balance_formatted = (total_balance/10**9)/32
+        else:
+            total_balance_formatted = (total_balance/10**9)
+        
         total_earned = ((total_balance/10**9) - len(VALIDATORS.split(','))*32)/32
         logger.info(f"Total balance: {total_balance_formatted} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")
         logger.info(f"Total earned: {total_earned} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")   
