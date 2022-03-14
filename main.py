@@ -79,10 +79,11 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
                         logger.error(err.message)
         if NETWORK == 'gnosis':
             total_balance_formatted = (total_balance/10**9)/32
+            total_earned = (total_balance_formatted - len(VALIDATORS.split(','))*32)
         else:
             total_balance_formatted = (total_balance/10**9)
+            total_earned = (total_balance_formatted - len(VALIDATORS.split(',')))
         
-        total_earned = ((total_balance/10**9) - len(VALIDATORS.split(','))*32)/32
         logger.info(f"Total balance: {total_balance_formatted} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")
         logger.info(f"Total earned: {total_earned} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")   
         logger.info(f'Epoch: {epoch}, inserting data to the {table_name} table.')
@@ -179,9 +180,10 @@ async def main():
                         if len(event.data) == 0: break
                         logger.info("Received finalized checkpoint from events stream.")
                         logger.info(event.data)
-                        epoch = json.loads(event.data)["epoch"]
-                        await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch, checkpoint_topic, total_balance)
-                        await alert_on_validator_inactivity(TABLE_NAME)
+                        if event.data.status_code == 200:
+                            epoch = json.loads(event.data)["epoch"]
+                            await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch, checkpoint_topic, total_balance)
+                            await alert_on_validator_inactivity(TABLE_NAME)
                     break
                 else: 
                     logger.warning(f'{url} is not available.')
