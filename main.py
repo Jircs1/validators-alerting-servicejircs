@@ -186,16 +186,10 @@ async def main():
             else: 
                 logger.warning(f'{url} is not available.')
         except requests.exceptions.Timeout as err:
-            try:
-                logger.error(f'Failed connecting to {url}. Error: {err}')
-            except IndexError:
-                logger.error(f'All endpoints are down: {urls}')
+            logger.error(f'Failed connecting to {url}. Error: {err}')
             continue
         except requests.exceptions.RequestException as err:
-            try:
-                logger.error(f'Failed connecting to {url}. Error: {err}')
-            except IndexError:
-                logger.error(f'All endpoints are down: {urls}')
+            logger.error(f'Failed connecting to {url}. Error: {err}')
             continue
         except AttributeError:
             continue
