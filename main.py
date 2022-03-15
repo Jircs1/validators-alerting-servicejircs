@@ -53,7 +53,7 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
     endpoint = f'{url}/eth/v1/beacon/states/head/validator_balances?id={validators}'
     
     try:
-        r = requests.get(endpoint, timeout=10.0)
+        r = requests.get(endpoint, timeout=5.0)
         r.raise_for_status()
         data = r.json()['data']
         for validator in data:
@@ -77,15 +77,16 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
                         cur.execute(f'INSERT OR REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], 0, missed_attestations_total))
                     except sqlite3.Error as err:
                         logger.error(err.message)
+        
         if NETWORK == 'gnosis':
-            total_balance_formatted = (total_balance/10**9)/32
-            total_earned = (total_balance_formatted - len(VALIDATORS.split(','))*32)
+            total_balance_formatted = (total_balance/10**9)
+            total_earned = (total_balance_formatted - len(VALIDATORS.split(','))*32)/32
         else:
             total_balance_formatted = (total_balance/10**9)
-            total_earned = (total_balance_formatted - len(VALIDATORS.split(',')))
-        
+            total_earned = (total_balance_formatted - len(VALIDATORS.split(','))*32)
+
         logger.info(f"Total balance: {total_balance_formatted} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")
-        logger.info(f"Total earned: {total_earned} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")   
+        logger.info(f"Total earned: {total_earned} {'GNO' if NETWORK == 'gnosis' else 'ETH'}")           
         logger.info(f'Epoch: {epoch}, inserting data to the {table_name} table.')
 
     except requests.exceptions.HTTPError:
@@ -144,7 +145,7 @@ async def send_alert(inactive_validators):
       'Authorization': f'GenieKey {OPSGENIE_KEY}'
     }
     try:
-        r = requests.post(endpoint, headers=headers, data=payload.encode('utf8'), timeout=10.0)
+        r = requests.post(endpoint, headers=headers, data=payload.encode('utf8'), timeout=5.0)
         r.raise_for_status()
         logger.info(f"Sending an alert for validators: {validators_indexes[:-1]}")
     except requests.exceptions.HTTPError as err:
@@ -159,38 +160,46 @@ async def send_alert(inactive_validators):
 # Executes get_validator_balances function on each new event
 async def main():
     validators = VALIDATORS.split(',')
-    url = BEACON_URL
+    urls = BEACON_URL.split(',')
     logger.info(f"{NETWORK} validators monitored: {len(validators)}")
     total_balance = 0
     
     await create_table(TABLE_NAME)
 
     while True:
-        try:
-            endpoint = f'{url}/eth/v1/events?topics=finalized_checkpoint'
-            stream_response = requests.get(endpoint, stream=True)
-            stream_response.raise_for_status()
-            checkpoint_topic = sseclient.SSEClient(stream_response)
+        for index, url in enumerate(urls):
+            try:
+                fallback = index + 1
+                endpoint = f'{url}/eth/v1/events?topics=finalized_checkpoint'
+                stream_response = requests.get(endpoint, stream=True)
+                stream_response.raise_for_status()
+                checkpoint_topic = sseclient.SSEClient(stream_response)
 
-            if stream_response.status_code == 200 or stream_response.status_code == 202:
-                logger.info(f'Connected to: {url}')
-                for event in checkpoint_topic.events():
-                    if len(event.data) == 0: break
-                    logger.info("Received finalized checkpoint from events stream.")
-                    logger.info(event.data)
-                    if event.data.status_code == 200:
+                if stream_response.status_code == 200 or stream_response.status_code == 202:
+                    logger.info(f'Connected to: {url}')
+                    for event in checkpoint_topic.events():
+                        if len(event.data) == 0: break
+                        logger.info("Received finalized checkpoint from events stream.")
+                        logger.info(event.data)
                         epoch = json.loads(event.data)["epoch"]
                         await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch, checkpoint_topic, total_balance)
                         await alert_on_validator_inactivity(TABLE_NAME)
-            else: 
-                logger.warning(f'{url} is not available.')
-        except requests.exceptions.Timeout as err:
-            logger.error(f'Failed connecting to {url}. Error: {err}')
-            continue
-        except requests.exceptions.RequestException as err:
-            logger.error(f'Failed connecting to {url}. Error: {err}')
-            continue
-        except AttributeError:
-            continue
+                    break
+                else: 
+                    logger.warning(f'{url} is not available.')
+            except requests.exceptions.Timeout as err:
+                try:
+                    logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
+                except IndexError:
+                    logger.error(f'All endpoints are down: {urls}')
+                continue
+            except requests.exceptions.RequestException as err:
+                try:
+                    logger.error(f'Failed connecting to {url}. Falling back to {urls[fallback]}. Error: {err}')
+                except IndexError:
+                    logger.error(f'All endpoints are down: {urls}')
+                continue
+            except AttributeError:
+                continue
 
 asyncio.run(main())
