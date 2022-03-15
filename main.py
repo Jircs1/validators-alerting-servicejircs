@@ -182,7 +182,6 @@ async def main():
                         epoch = json.loads(event.data)["epoch"]
                         await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch, checkpoint_topic, total_balance)
                         await alert_on_validator_inactivity(TABLE_NAME)
-                break
             else: 
                 logger.warning(f'{url} is not available.')
         except requests.exceptions.Timeout as err:
