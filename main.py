@@ -79,8 +79,8 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
                         logger.error(err.message)
         
         if NETWORK == 'gnosis':
-            total_balance_formatted = (total_balance/10**9)
-            total_earned = (total_balance_formatted - len(VALIDATORS.split(','))*32)/32
+            total_balance_formatted = (total_balance/10**9)/32
+            total_earned = ((total_balance/10**9) - len(VALIDATORS.split(','))*32)/32
         else:
             total_balance_formatted = (total_balance/10**9)
             total_earned = (total_balance_formatted - len(VALIDATORS.split(','))*32)
