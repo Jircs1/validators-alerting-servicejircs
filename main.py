@@ -56,6 +56,9 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
         r = requests.get(endpoint, timeout=5.0)
         r.raise_for_status()
         data = r.json()['data']
+        
+        committee_validators = await get_committee(url)
+
         for validator in data:
             try:
                 cur.execute(f'INSERT OR IGNORE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'],0,0))
@@ -69,7 +72,11 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
                 if balance > int(validator['balance']):
                     logger.warning(f'Attestation has been missed by {validator["index"]}, count: {missed_attestations_current +1}')
                     try:
-                        cur.execute(f'REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], missed_attestations_current +1, missed_attestations_total +1))
+                        # Temporary solution for Lighthouse issues with sync committees on Gnosis network
+                        if validator['index'] in committee_validators and NETWORK == 'Gnosis':
+                            logging.info(f'Validator {validator["index"]} is in the committee. Skipping.')
+                        else:
+                            cur.execute(f'REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], missed_attestations_current +1, missed_attestations_total +1))
                     except sqlite3.Error as err:
                         logger.error(err.message)
                 else:
@@ -118,6 +125,18 @@ async def alert_on_validator_inactivity(table):
                 await send_alert(inactive_validators)
         except sqlite3.Error as err:
             logger.error(err.message)
+            
+async def get_committee(url):
+    endpoint = f'{url}/eth/v1/beacon/states/finalized/sync_committees'
+    try:
+        r = requests.get(endpoint, timeout=5.0)
+        r.raise_for_status()
+        return r.json()['data']['validators']
+    except requests.exceptions.HTTPError as err:
+        logger.error(f'Error: {err}')
+    except requests.exceptions.RequestException as err:
+        logger.error(f'Error: {err}')
+
 
 # Sends POST message to OpsGenie service
 async def send_alert(inactive_validators):
