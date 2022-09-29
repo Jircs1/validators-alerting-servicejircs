@@ -1,14 +1,11 @@
 
 import requests
 import sqlite3
-from dotenv import load_dotenv
-load_dotenv()
 import os
-import watchtower, logging
+import logging
 from sseclient import SSEClient
 import asyncio
 import json
-import time
 
 # Environment variables
 NETWORK=os.getenv('NETWORK') # Network name
@@ -73,9 +70,8 @@ async def get_validator_balances(url, validators, table_name, epoch, checkpoint_
                     logger.warning(f'Attestation has been missed by {validator["index"]}, count: {missed_attestations_current +1}')
                     try:
                         if validator['index'] in committee_validators:
-                            logging.info(f'Validator {validator["index"]} is in the committee and is misbehaving.')
-                        else:
-                            cur.execute(f'REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], missed_attestations_current +1, missed_attestations_total +1))
+                            logging.error(f'Validator {validator["index"]} is in the committee and is misbehaving.')
+                        cur.execute(f'REPLACE INTO {table_name} (ind, balance, missed_attestations_current, missed_attestations_total) VALUES (?,?,?,?)',(validator['index'], validator['balance'], missed_attestations_current +1, missed_attestations_total +1))
                     except sqlite3.Error as err:
                         logger.error(err)
                 else:
@@ -198,7 +194,7 @@ async def main():
                     logger.info(event.data)
                     epoch = json.loads(event.data)["epoch"]
                     await get_validator_balances(url, VALIDATORS, TABLE_NAME, epoch, checkpoint_topic, total_balance)
-                    # await alert_on_validator_inactivity(TABLE_NAME)
+                    await alert_on_validator_inactivity(TABLE_NAME)
                 break
             except Exception as err:
                 try:
